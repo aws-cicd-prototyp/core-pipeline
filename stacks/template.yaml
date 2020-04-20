@@ -84,6 +84,9 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      VersioningConfiguration: 
+        Status: Enabled
+        # TODO Cleanup rules
       Tags:
         - Key: Name
           Value: !Sub "codepipeline-artifacts-test"
@@ -171,6 +174,10 @@ Resources:
               REPOSITORY: "ENTER_A_NAME"
               BRANCH: "ENTER_A_BRANCH"
               STAGE: "ENTER_A_STAGE"
+              ARTIFACT_BUCKET: "Artifact Bucket"
+              PIPELINE_ROLE_ARN: "Pipeline role ARN"
+              PIPELINE_DEPLOY_ROLE_ARN: "Pipeline deploy role ARN"
+              PIPELINE_KMS_KEY_ARN: "Pipeline KMS key ARN"
             git-credential-helper: yes
           phases:
             pre_build:
@@ -182,6 +189,15 @@ Resources:
                 - git checkout $BRANCH
                 - ls -lah
                 - echo ${CODEBUILD_SRC_DIR}
+                - |
+                  cat <<EOF > pipeline_env.json
+                  {
+                    "ArtifactBucket": "${ARTIFACT_BUCKET}",
+                    "PipelineRoleArn": "${PIPELINE_ROLE_ARN}",
+                    "PipelineDeployRoleArn": "${PIPELINE_DEPLOY_ROLE_ARN}",
+                    "PipelineKmsKeyArn": "${PIPELINE_KMS_KEY_ARN}"
+                  }
+                  EOF
           artifacts:
             base-directory: ${REPOSITORY}
             files:
@@ -189,6 +205,7 @@ Resources:
               - build/pipeline-${STAGE}.json
               - build/roles-policies.yaml
               - build/roles-policies-${STAGE}.json
+              - pipeline_env.json
       Environment:
         ComputeType: BUILD_GENERAL1_SMALL
         Image: aws/codebuild/standard:3.0
@@ -202,8 +219,213 @@ Resources:
             Value: Provide the name of the repository
           - Name: BRANCH
             Value: Provide the branch
+          - Name: ARTIFACT_BUCKET
+            Value: !Ref ArtifactBucket
+          - Name: PIPELINE_ROLE_ARN
+            Value: !GetAtt PipeLineRole.Arn
+          - Name: PIPELINE_DEPLOY_ROLE_ARN
+            Value: !GetAtt PipelineDeployRole.Arn
+          - Name: PIPELINE_KMS_KEY_ARN
+            Value: !GetAtt CodePipelineKmsKey.Arn
 
       Name: "CreateUpdateBuildPipeline"
       ServiceRole: !Ref CodeBuildServiceRole
 
+  PipeLineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: core-codepipeline-role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+  PipelinePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: core-codepipeline-policy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Action:
+              - codepipeline:*
+              - iam:ListRoles
+              - cloudformation:Describe*
+              - cloudFormation:List*
+              - codecommit:List*
+              - codecommit:Get*
+              - codecommit:GitPull
+              - codecommit:UploadArchive
+              - codecommit:CancelUploadArchive
+              - codebuild:BatchGetBuilds
+              - codebuild:StartBuild
+              - cloudformation:CreateStack
+              - cloudformation:DeleteStack
+              - cloudformation:DescribeStacks
+              - cloudformation:UpdateStack
+              - cloudformation:CreateChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:DescribeChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:SetStackPolicy
+              - cloudformation:ValidateTemplate
+              - iam:PassRole
+              - s3:ListAllMyBuckets
+              - s3:GetBucketLocation
+            Resource:
+              - "*"
+          -
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+              - kms:Encrypt
+              - kms:GenerateDataKey
+            Resource: !GetAtt CodePipelineKmsKey.Arn
+          -
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetBucketPolicy
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:GetObjectVersion
+              - s3:GetBucketVersioning
+              - s3:ListBucketVersions
+              - s3:GetObjectVersionTagging
+            Resource:
+             - !Join ['',['arn:aws:s3:::',!Ref ArtifactBucket, '/*']]
+             - !Join ['',['arn:aws:s3:::',!Ref ArtifactBucket]]
+          -
+            Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Resource: 
+              - !GetAtt PipelineDeployRole.Arn
+
+      Roles:
+        -
+          !Ref PipeLineRole
+  PipelineDeployRole:
+    Type: AWS::IAM::Role
+    DependsOn: PipeLineRole
+    Properties:
+      RoleName: core-codepipeline-deploy-role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - cloudformation.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+  PipelineDeployPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: core-codepipeline-deloy-policy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Action:
+              - codepipeline:*
+              - iam:ListRoles
+              - codecommit:List*
+              - codecommit:Get*
+              - codecommit:GitPull
+              - codecommit:UploadArchive
+              - codecommit:CancelUploadArchive
+              - codebuild:BatchGetBuilds
+              - codebuild:StartBuild
+              - iam:PassRole
+              - s3:*
+              - cloudformation:*
+            Resource:
+              - "*"
+          -
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+              - kms:Encrypt
+              - kms:GenerateDataKey
+            Resource: !GetAtt CodePipelineKmsKey.Arn
+          -
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetBucketPolicy
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:GetObjectVersion
+              - s3:GetBucketVersioning
+              - s3:ListBucketVersions
+              - s3:GetObjectVersionTagging
+            Resource:
+             - !Join ['',['arn:aws:s3:::',!Ref ArtifactBucket, '/*']]
+             - !Join ['',['arn:aws:s3:::',!Ref ArtifactBucket]]
+      Roles:
+        - !Ref PipelineDeployRole
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn: !GetAtt PipeLineRole.Arn
+      Name: !Ref AWS::StackName
+      ArtifactStore:
+        Location: !Ref ArtifactBucket
+        Type: S3
+        EncryptionKey: 
+          Type: KMS
+          Id: !Ref CodePipelineKmsAlias
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: 1
+                Provider: S3
+              Configuration: 
+                S3Bucket: !Ref ArtifactBucket 
+                S3ObjectKey: core-pipeline.zip
+              OutputArtifacts: 
+                - Name: SourceOutput 
+              RunOrder: 1
+        - Name: DeployPipeline
+          Actions:
+            - Name: DeployPipeline
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              Configuration:
+                ActionMode: CREATE_UPDATE # TODO replace failed
+                StackName: microservice-pipeline # TODO parametrize the name
+                Capabilities: CAPABILITY_NAMED_IAM
+                TemplatePath: SourceOutput::build/pipeline.yaml
+                RoleArn: !GetAtt PipelineDeployRole.Arn
+                ParameterOverrides: |
+                  {
+                    "ArtifactBucket" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "ArtifactBucket"]},
+                    "PipelineRoleArn" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "PipelineRoleArn"]},
+                    "PipelineDeployRoleArn" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "PipelineDeployRoleArn"]},
+                    "PipelineKmsKeyArn" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "PipelineKmsKeyArn"]}
+                  }
+              InputArtifacts:
+                - Name: SourceOutput
+              RunOrder: 2
+              # RoleArn: !GetAtt PipelineDeployActionRole.Arn
 
