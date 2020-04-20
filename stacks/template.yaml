@@ -1,0 +1,209 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: Cloudformation-Stack for the Base-Deploy-Pipeline. This stack is created in the DevOps Account.
+
+Parameters:
+ # gitHubOAuthToken:
+ #   Description: "The gitHub-OAuthToken for the authentication between github and aws-codepipeline"
+ #   Type: String
+ # GitRepoName:
+ #   Description: "The name of the Microservice Git-repository"
+ #   Type: String
+  RemoteAccountTest:
+    Description: The remote workload account ID
+    Type: String
+
+Resources:
+  CodePipelineKmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: "KMS-Key used by code pipelines to enrypt/decrypt the source code in S3"
+      EnableKeyRotation: True
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: !Sub "CodePipelineKey-test"
+        Statement:
+          - Sid: AdminAccess
+            Effect: Allow
+            Action:
+              - "kms:*"
+            Principal:
+              AWS:
+                - !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Resource: "*" 
+          - Sid: Allow usage from workload accounts
+            Effect: Allow
+            Action:
+              - "kms:Decrypt"
+              - "kms:DescribeKey"
+            Principal:
+              AWS:
+                - !Sub "arn:aws:iam::${RemoteAccountTest}:root"
+            Condition:
+              StringEquals: 
+                "aws:PrincipalTag/Owner": "DevOpsAccount"
+                "aws:PrincipalType": "AssumedRole"
+              "ForAnyValue:StringEquals":
+                "aws:CalledVia": ["cloudformation.amazonaws.com"]
+            Resource: "*" 
+      Tags:
+        - Key: Name
+          Value: !Sub "CodePipelineKey-test"
+        - Key: Stage
+          Value: !Sub "test"
+  CodePipelineKmsAlias:
+    Type: AWS::KMS::Alias
+    DependsOn: CodePipelineKmsKey
+    Properties:
+      AliasName: !Sub "alias/codepipeline-crossaccount-key-test"
+      TargetKeyId: !Ref CodePipelineKmsKey
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: CodePipelineKmsAlias
+    Properties:
+      BucketName: !Join
+        - "-"
+        - - "codepipeline-artifacts-test"
+          - !Select
+            - 0
+            - !Split
+              - "-"
+              - !Select
+                - 2
+                - !Split
+                  - "/"
+                  - !Ref "AWS::StackId"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              KMSMasterKeyID: !Ref CodePipelineKmsKey
+              SSEAlgorithm: 'aws:kms'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Name
+          Value: !Sub "codepipeline-artifacts-test"
+        - Key: Stage
+          Value: !Sub "test"
+
+  S3BucketPolicy:
+    # TODO - Deny manual PUTs
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArtifactBucket
+      PolicyDocument:
+        Statement:
+          - Action:
+              - s3:GetObject
+              - s3:ListBucket
+            Effect: Allow
+            Resource:
+              - !Sub 'arn:aws:s3:::${ArtifactBucket}'
+              - !Sub 'arn:aws:s3:::${ArtifactBucket}/*'
+            Principal:
+              AWS:
+                - !Sub "arn:aws:iam::${RemoteAccountTest}:root"
+            Condition:
+              StringEquals: 
+                "aws:PrincipalTag/Owner": "DevOpsAccount"
+                "aws:PrincipalType": "AssumedRole"
+              "ForAnyValue:StringEquals":
+                "aws:CalledVia": ["cloudformation.amazonaws.com"]
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CodeBuildServiceRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+  CodeBuildServiceRolePolicies:
+    Type: AWS::IAM::Policy
+    DependsOn: CodeBuildServiceRole
+    Properties:
+      PolicyName: "CodeBuildServiceRolePolicies"
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Resource: "*"
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:GetObjectVersion
+            Resource:
+              - !Sub 'arn:aws:s3:::${ArtifactBucket}'
+              - !Sub 'arn:aws:s3:::${ArtifactBucket}/*'
+      Roles:
+        - !Ref CodeBuildServiceRole                
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    DependsOn:
+      - CodeBuildServiceRole
+    Properties:
+      Artifacts:
+        Type: S3
+        Name: core-pipeline.zip
+        Packaging: ZIP
+        Location: !Ref ArtifactBucket # TODO use a separate bucket???
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+          env:
+            variables:
+              PROJECT: "Enter the name of Git project"
+              REPOSITORY: "ENTER_A_NAME"
+              BRANCH: "ENTER_A_BRANCH"
+              STAGE: "ENTER_A_STAGE"
+            git-credential-helper: yes
+          phases:
+            pre_build:
+              commands:
+                - ls -lah
+                - git clone https://github.com/${PROJECT}/${REPOSITORY}.git
+                - cd $REPOSITORY
+                - ls -lah
+                - git checkout $BRANCH
+                - ls -lah
+                - echo ${CODEBUILD_SRC_DIR}
+          artifacts:
+            base-directory: ${REPOSITORY}
+            files:
+              - build/pipeline.yaml
+              - build/pipeline-${STAGE}.json
+              - build/roles-policies.yaml
+              - build/roles-policies-${STAGE}.json
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:3.0
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: STAGE
+            Value: test
+          - Name: PROJECT
+            Value: Enter the name of Git project
+          - Name: REPOSITORY
+            Value: Provide the name of the repository
+          - Name: BRANCH
+            Value: Provide the branch
+
+      Name: "CreateUpdateBuildPipeline"
+      ServiceRole: !Ref CodeBuildServiceRole
+
+
