@@ -195,7 +195,9 @@ Resources:
                     "ArtifactBucket": "${ARTIFACT_BUCKET}",
                     "PipelineRoleArn": "${PIPELINE_ROLE_ARN}",
                     "PipelineDeployRoleArn": "${PIPELINE_DEPLOY_ROLE_ARN}",
-                    "PipelineKmsKeyArn": "${PIPELINE_KMS_KEY_ARN}"
+                    "PipelineKmsKeyArn": "${PIPELINE_KMS_KEY_ARN}",
+                    "Branch": "${BRANCH}",
+                    "Stage": "${STAGE}"
                   }
                   EOF
           artifacts:
@@ -422,7 +424,9 @@ Resources:
                     "ArtifactBucket" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "ArtifactBucket"]},
                     "PipelineRoleArn" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "PipelineRoleArn"]},
                     "PipelineDeployRoleArn" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "PipelineDeployRoleArn"]},
-                    "PipelineKmsKeyArn" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "PipelineKmsKeyArn"]}
+                    "PipelineKmsKeyArn" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "PipelineKmsKeyArn"]},
+                    "Branch" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "Branch"]},
+                    "Stage" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "Stage"]}
                   }
               InputArtifacts:
                 - Name: SourceOutput
