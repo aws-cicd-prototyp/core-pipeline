@@ -1,0 +1,80 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: Cloudformation-Stack for the core pipleine cross account role. This stack is created in workload accounts.
+
+Parameters:
+  DevOpsAccount:
+    Description: The DevOps tooling account ID
+    Type: String
+  CodePipelineKmsKeyArn:
+    Description: The DevOps tooling KMS key Arn
+    Type: String
+  ArtifactBucket:
+    Description: The DevOps tooling artifact bucket
+    Type: String
+
+Resources:
+  CrossAccountCoreRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CrossAccountRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - cloudformation.amazonaws.com
+              AWS:
+                - !Sub arn:aws:iam::${DevOpsAccount}:root
+                  # TODO refine with conditions
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Tags:
+        - Key: Stage
+          Value: test
+        - Key: Owner
+          Value: DevOpsAccount
+
+
+  CrossAccountCorePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: CoreCodepipelineDeloyPolicy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Action:
+              - cloudformation:*
+              - iam:* 
+              # TODO define precise privileges
+            Resource:
+              - "*"
+          -
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+              - kms:Encrypt
+              - kms:GenerateDataKey
+            Resource: 
+              - "*"
+          -
+            Effect: Allow
+            Action:
+              - s3:GetBucketPolicy
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:GetObjectVersion
+              - s3:GetBucketVersioning
+              - s3:ListBucketVersions
+              - s3:GetObjectVersionTagging
+            Resource: 
+              - "*"
+             #- !Join ['',['arn:aws:s3:::',!Ref ArtifactBucket, '/*']]
+             #- !Join ['',['arn:aws:s3:::',!Ref ArtifactBucket]]
+      Roles:
+        - !Ref CrossAccountCoreRole
