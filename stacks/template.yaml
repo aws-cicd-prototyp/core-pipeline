@@ -31,17 +31,18 @@ Resources:
           - Sid: Allow usage from workload accounts
             Effect: Allow
             Action:
-              - "kms:Decrypt"
-              - "kms:DescribeKey"
+              - kms:Decrypt
+              - kms:Encrypt
+              - kms:GenerateDataKey
             Principal:
               AWS:
                 - !Sub "arn:aws:iam::${RemoteAccountTest}:root"
-            Condition:
-              StringEquals: 
-                "aws:PrincipalTag/Owner": "DevOpsAccount"
-                "aws:PrincipalType": "AssumedRole"
-              "ForAnyValue:StringEquals":
-                "aws:CalledVia": ["cloudformation.amazonaws.com"]
+#            Condition:
+#              StringEquals: 
+#                "aws:PrincipalTag/Owner": "DevOpsAccount"
+#                "aws:PrincipalType": "AssumedRole"
+#              "ForAnyValue:StringEquals":
+#                "aws:CalledVia": ["cloudformation.amazonaws.com"]
             Resource: "*" 
       Tags:
         - Key: Name
@@ -98,8 +99,13 @@ Resources:
       PolicyDocument:
         Statement:
           - Action:
+              - s3:GetBucketPolicy
               - s3:GetObject
               - s3:ListBucket
+              - s3:GetObjectVersion
+              - s3:GetBucketVersioning
+              - s3:ListBucketVersions
+              - s3:GetObjectVersionTagging
             Effect: Allow
             Resource:
               - !Sub 'arn:aws:s3:::${ArtifactBucket}'
@@ -107,12 +113,12 @@ Resources:
             Principal:
               AWS:
                 - !Sub "arn:aws:iam::${RemoteAccountTest}:root"
-            Condition:
-              StringEquals: 
-                "aws:PrincipalTag/Owner": "DevOpsAccount"
-                "aws:PrincipalType": "AssumedRole"
-              "ForAnyValue:StringEquals":
-                "aws:CalledVia": ["cloudformation.amazonaws.com"]
+#            Condition:
+#              StringEquals: 
+#                "aws:PrincipalTag/Owner": "DevOpsAccount"
+#                "aws:PrincipalType": "AssumedRole"
+#              "ForAnyValue:StringEquals":
+#                "aws:CalledVia": ["cloudformation.amazonaws.com"]
 
   CodeBuildServiceRole:
     Type: AWS::IAM::Role
@@ -176,6 +182,7 @@ Resources:
               PIPELINE_DEPLOY_ROLE_ARN: "Pipeline deploy role ARN"
               PIPELINE_KMS_KEY_ARN: "Pipeline KMS key ARN"
               REMOTE_ACCOUNT_ID: "Remote workload account id"
+              DEV_OPS_ACCOUNT_ID: "DevOps account id"
             git-credential-helper: yes
           phases:
             pre_build:
@@ -197,7 +204,8 @@ Resources:
                     "PipelineKmsKeyArn": "${PIPELINE_KMS_KEY_ARN}",
                     "Branch": "${BRANCH}",
                     "Stage": "${STAGE}",
-                    "RemoteAccountId": "${REMOTE_ACCOUNT_ID}"
+                    "RemoteAccount": "${REMOTE_ACCOUNT_ID}",
+                    "DevOpsAccount": "${DEV_OPS_ACCOUNT_ID}"
                   }
                   EOF
           artifacts:
@@ -231,43 +239,11 @@ Resources:
             Value: !GetAtt CodePipelineKmsKey.Arn
           - Name: REMOTE_ACCOUNT_ID
             Value: !Ref RemoteAccountTest
+          - Name: DEV_OPS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
 
       Name: "CreateUpdateBuildPipeline"
       ServiceRole: !Ref CodeBuildServiceRole
-
-  CrossAccountRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: CrossAccountRole
-      AssumeRolePolicyDocument:
-        Version: 2012-10-17
-        Statement:
-          -
-            Effect: Allow
-            Principal:
-              Service:
-                - codepipeline.amazonaws.com
-              AWS:
-                - !GetAtt PipeLineRole.Arn
-            Action:
-              - sts:AssumeRole
-      Path: /
-
-  CrossAccountPolicy:
-    Type: AWS::IAM::Policy
-    Properties:
-      PolicyName: CrossAccountPolicy
-      PolicyDocument:
-        Version: 2012-10-17
-        Statement:
-          -
-            Effect: Allow
-            Action:
-              - sts:AssumeRole
-            Resource: 
-              - !Sub arn:aws:iam::${RemoteAccountTest}:role/CrossAccountCoreRole
-      Roles:
-        - !Ref CrossAccountRole
 
 
   PipeLineRole:
@@ -348,6 +324,7 @@ Resources:
               - sts:AssumeRole
             Resource: 
               - !GetAtt PipelineDeployRole.Arn
+              - !Sub arn:aws:iam::${RemoteAccountTest}:role/CrossAccountRole
 
       Roles:
         - !Ref PipeLineRole
@@ -356,6 +333,7 @@ Resources:
     Type: AWS::IAM::Role
     DependsOn: PipeLineRole
     Properties:
+      # TOTO better resource naming
       RoleName: CoreCodepipelineDeployRole
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -390,6 +368,7 @@ Resources:
               - iam:PassRole
               - s3:*
               - cloudformation:*
+              - iam:* # TODO refine permissions 
             Resource:
               - "*"
           -
@@ -413,11 +392,21 @@ Resources:
             Resource:
              - !Join ['',['arn:aws:s3:::',!Ref ArtifactBucket, '/*']]
              - !Join ['',['arn:aws:s3:::',!Ref ArtifactBucket]]
+          -
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+              - ssm:GetParameters
+            Resource:
+              - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/GitHubOauthToken"
       Roles:
         - !Ref PipelineDeployRole
 
   Pipeline:
     Type: AWS::CodePipeline::Pipeline
+    DependsOn:
+      - PipelinePolicy
+      - PipeLineRole
     Properties:
       RoleArn: !GetAtt PipeLineRole.Arn
       Name: !Ref AWS::StackName
@@ -459,13 +448,16 @@ Resources:
                 RoleArn: !Sub arn:aws:iam::${RemoteAccountTest}:role/CrossAccountCoreRole
                 ParameterOverrides: |
                   {
+                    "ArtifactBucket" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "ArtifactBucket"]},
+                    "PipelineKmsKeyArn" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "PipelineKmsKeyArn"]},
                     "Branch" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "Branch"]},
-                    "Stage" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "Stage"]}
+                    "Stage" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "Stage"]},
+                    "DevOpsAccount": { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "DevOpsAccount"]}
                   }
               InputArtifacts:
                 - Name: SourceOutput
               RunOrder: 1
-              RoleArn: !GetAtt CrossAccountRole.Arn
+              RoleArn: !Sub arn:aws:iam::${RemoteAccountTest}:role/CrossAccountRole
         - Name: DeployPipeline
           Actions:
             - Name: DeployPipeline
@@ -484,12 +476,10 @@ Resources:
                 ParameterOverrides: |
                   {
                     "ArtifactBucket" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "ArtifactBucket"]},
-                    "PipelineRoleArn" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "PipelineRoleArn"]},
-                    "PipelineDeployRoleArn" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "PipelineDeployRoleArn"]},
                     "PipelineKmsKeyArn" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "PipelineKmsKeyArn"]},
                     "Branch" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "Branch"]},
                     "Stage" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "Stage"]},
-                    "RemoteAccountId" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "RemoteAccountId"]}
+                    "RemoteAccount" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "RemoteAccount"]}
                   }
               InputArtifacts:
                 - Name: SourceOutput

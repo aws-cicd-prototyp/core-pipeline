@@ -14,10 +14,83 @@ Parameters:
     Type: String
 
 Resources:
-  CrossAccountCoreRole:
+  # TODO use better resource names
+  CrossAccountRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: CrossAccountRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+              AWS:
+                - !Sub arn:aws:iam::${DevOpsAccount}:root
+            Action:
+              - sts:AssumeRole
+      Path: /
+
+  CrossAccountPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: CrossAccountPolicy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Action:
+              - codepipeline:*
+              - iam:ListRoles
+              - codecommit:List*
+              - codecommit:Get*
+              - codecommit:GitPull
+              - codecommit:UploadArchive
+              - codecommit:CancelUploadArchive
+              - codebuild:BatchGetBuilds
+              - codebuild:StartBuild
+              - iam:PassRole
+              - s3:*
+              - cloudformation:*
+            Resource:
+              - "*"
+          -
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+              - kms:Encrypt
+              - kms:GenerateDataKey
+            Resource: !Ref CodePipelineKmsKeyArn
+          -
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetBucketPolicy
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:GetObjectVersion
+              - s3:GetBucketVersioning
+              - s3:ListBucketVersions
+              - s3:GetObjectVersionTagging
+            Resource:
+             - !Join ['',['arn:aws:s3:::',!Ref ArtifactBucket, '/*']]
+             - !Join ['',['arn:aws:s3:::',!Ref ArtifactBucket]]
+          -
+            Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Resource: 
+              - !GetAtt CrossAccountCoreRole.Arn
+      Roles:
+        - !Ref CrossAccountRole
+
+  CrossAccountCoreRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CrossAccountCoreRole
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -42,7 +115,7 @@ Resources:
   CrossAccountCorePolicy:
     Type: AWS::IAM::Policy
     Properties:
-      PolicyName: CoreCodepipelineDeloyPolicy
+      PolicyName: CrossAccountCorePolicy
       PolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -51,6 +124,7 @@ Resources:
             Action:
               - cloudformation:*
               - iam:* 
+              - iam:PassRole
               # TODO define precise privileges
             Resource:
               - "*"
@@ -61,7 +135,7 @@ Resources:
               - kms:Encrypt
               - kms:GenerateDataKey
             Resource: 
-              - "*"
+              - !Ref CodePipelineKmsKeyArn
           -
             Effect: Allow
             Action:
@@ -73,8 +147,7 @@ Resources:
               - s3:ListBucketVersions
               - s3:GetObjectVersionTagging
             Resource: 
-              - "*"
-             #- !Join ['',['arn:aws:s3:::',!Ref ArtifactBucket, '/*']]
-             #- !Join ['',['arn:aws:s3:::',!Ref ArtifactBucket]]
+              - !Join ['',['arn:aws:s3:::',!Ref ArtifactBucket, '/*']]
+              - !Join ['',['arn:aws:s3:::',!Ref ArtifactBucket]]
       Roles:
         - !Ref CrossAccountCoreRole
