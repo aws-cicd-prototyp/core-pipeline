@@ -1,7 +1,10 @@
 ---
 # TODO consistent tagging
 # TODO outputs
-# CF Stack Deletion and assumed roles
+# TODO CF Stack Deletion and assumed roles
+# TODO permissions permissions permissions
+# TODO Setup user roles and check security issues
+# TODO Manage CF outputs in SSM
 AWSTemplateFormatVersion: 2010-09-09
 Description: Cloudformation-Stack for the core code pipeline. This stack is created in the DevOps Account.
 
@@ -9,117 +12,11 @@ Parameters:
   RemoteAccountTest:
     Description: The remote workload account ID
     Type: String
+  BaseStack:
+    Description: Base CF stack to import references from
+    Type: String
 
 Resources:
-  CodePipelineKmsKey:
-    Type: AWS::KMS::Key
-    Properties:
-      Description: "KMS-Key used by code pipelines to enrypt/decrypt the source code in S3"
-      EnableKeyRotation: True
-      KeyPolicy:
-        Version: "2012-10-17"
-        Id: !Sub "CodePipelineKey-test"
-        Statement:
-          - Sid: AdminAccess
-            Effect: Allow
-            Action:
-              - "kms:*"
-            Principal:
-              AWS:
-                - !Sub "arn:aws:iam::${AWS::AccountId}:root"
-            Resource: "*" 
-          - Sid: Allow usage from workload accounts
-            Effect: Allow
-            Action:
-              - kms:Decrypt
-              - kms:Encrypt
-              - kms:GenerateDataKey
-            Principal:
-              AWS:
-                - !Sub "arn:aws:iam::${RemoteAccountTest}:root"
-#            Condition:
-#              StringEquals: 
-#                "aws:PrincipalTag/Owner": "DevOpsAccount"
-#                "aws:PrincipalType": "AssumedRole"
-#              "ForAnyValue:StringEquals":
-#                "aws:CalledVia": ["cloudformation.amazonaws.com"]
-            Resource: "*" 
-      Tags:
-        - Key: Name
-          Value: !Sub "CodePipelineKey-test"
-        - Key: Stage
-          Value: !Sub "test"
-  CodePipelineKmsAlias:
-    Type: AWS::KMS::Alias
-    DependsOn: CodePipelineKmsKey
-    Properties:
-      AliasName: !Sub "alias/codepipeline-crossaccount-key-test"
-      TargetKeyId: !Ref CodePipelineKmsKey
-
-  ArtifactBucket:
-    Type: AWS::S3::Bucket
-    DependsOn: CodePipelineKmsAlias
-    Properties:
-      BucketName: !Join
-        - "-"
-        - - "codepipeline-artifacts-test"
-          - !Select
-            - 0
-            - !Split
-              - "-"
-              - !Select
-                - 2
-                - !Split
-                  - "/"
-                  - !Ref "AWS::StackId"
-      BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              KMSMasterKeyID: !Ref CodePipelineKmsKey
-              SSEAlgorithm: 'aws:kms'
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        BlockPublicPolicy: true
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
-      VersioningConfiguration: 
-        Status: Enabled
-        # TODO Cleanup rules
-      Tags:
-        - Key: Name
-          Value: !Sub "codepipeline-artifacts-test"
-        - Key: Stage
-          Value: !Sub "test"
-
-  S3BucketPolicy:
-    # TODO - Deny manual PUTs
-    Type: AWS::S3::BucketPolicy
-    Properties:
-      Bucket: !Ref ArtifactBucket
-      PolicyDocument:
-        Statement:
-          - Action:
-              - s3:GetBucketPolicy
-              - s3:GetObject
-              - s3:ListBucket
-              - s3:GetObjectVersion
-              - s3:GetBucketVersioning
-              - s3:ListBucketVersions
-              - s3:GetObjectVersionTagging
-            Effect: Allow
-            Resource:
-              - !Sub 'arn:aws:s3:::${ArtifactBucket}'
-              - !Sub 'arn:aws:s3:::${ArtifactBucket}/*'
-            Principal:
-              AWS:
-                - !Sub "arn:aws:iam::${RemoteAccountTest}:root"
-#            Condition:
-#              StringEquals: 
-#                "aws:PrincipalTag/Owner": "DevOpsAccount"
-#                "aws:PrincipalType": "AssumedRole"
-#              "ForAnyValue:StringEquals":
-#                "aws:CalledVia": ["cloudformation.amazonaws.com"]
-
   CodeBuildServiceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -152,8 +49,15 @@ Resources:
               - s3:PutObject
               - s3:GetObjectVersion
             Resource:
-              - !Sub 'arn:aws:s3:::${ArtifactBucket}'
-              - !Sub 'arn:aws:s3:::${ArtifactBucket}/*'
+              - Fn::Join:
+                - ''
+                - - 'arn:aws:s3:::'
+                  - Fn::ImportValue: !Sub "${BaseStack}:ArtifactBucket"
+              - Fn::Join:
+                - ''
+                - - 'arn:aws:s3:::'
+                  - Fn::ImportValue: !Sub "${BaseStack}:ArtifactBucket"
+                  - '/*'
       Roles:
         - !Ref CodeBuildServiceRole                
 
@@ -166,7 +70,8 @@ Resources:
         Type: S3
         Name: core-pipeline.zip
         Packaging: ZIP
-        Location: !Ref ArtifactBucket # TODO use a separate bucket???
+        Location: 
+          Fn::ImportValue: !Sub "${BaseStack}:ArtifactBucket" # TODO use a separate bucket???
       Source:
         Type: NO_SOURCE
         BuildSpec: |
@@ -230,13 +135,15 @@ Resources:
           - Name: BRANCH
             Value: Provide the branch
           - Name: ARTIFACT_BUCKET
-            Value: !Ref ArtifactBucket
+            Value: 
+              Fn::ImportValue: !Sub "${BaseStack}:ArtifactBucket"
           - Name: PIPELINE_ROLE_ARN
             Value: !GetAtt PipeLineRole.Arn
           - Name: PIPELINE_DEPLOY_ROLE_ARN
             Value: !GetAtt PipelineDeployRole.Arn
           - Name: PIPELINE_KMS_KEY_ARN
-            Value: !GetAtt CodePipelineKmsKey.Arn
+            Value: 
+              Fn::ImportValue: !Sub "${BaseStack}:CodePipelineKmsKeyArn"
           - Name: REMOTE_ACCOUNT_ID
             Value: !Ref RemoteAccountTest
           - Name: DEV_OPS_ACCOUNT_ID
@@ -303,7 +210,8 @@ Resources:
               - kms:Decrypt
               - kms:Encrypt
               - kms:GenerateDataKey
-            Resource: !GetAtt CodePipelineKmsKey.Arn
+            Resource: 
+              Fn::ImportValue: !Sub "${BaseStack}:CodePipelineKmsKeyArn"
           -
             Effect: Allow
             Action:
@@ -316,8 +224,15 @@ Resources:
               - s3:ListBucketVersions
               - s3:GetObjectVersionTagging
             Resource:
-             - !Join ['',['arn:aws:s3:::',!Ref ArtifactBucket, '/*']]
-             - !Join ['',['arn:aws:s3:::',!Ref ArtifactBucket]]
+              - Fn::Join:
+                - ''
+                - - 'arn:aws:s3:::'
+                  - Fn::ImportValue: !Sub "${BaseStack}:ArtifactBucket"
+              - Fn::Join:
+                - ''
+                - - 'arn:aws:s3:::'
+                  - Fn::ImportValue: !Sub "${BaseStack}:ArtifactBucket"
+                  - '/*'
           -
             Effect: Allow
             Action:
@@ -377,7 +292,8 @@ Resources:
               - kms:Decrypt
               - kms:Encrypt
               - kms:GenerateDataKey
-            Resource: !GetAtt CodePipelineKmsKey.Arn
+            Resource: 
+              Fn::ImportValue: !Sub "${BaseStack}:CodePipelineKmsKeyArn"
           -
             Effect: Allow
             Action:
@@ -390,8 +306,15 @@ Resources:
               - s3:ListBucketVersions
               - s3:GetObjectVersionTagging
             Resource:
-             - !Join ['',['arn:aws:s3:::',!Ref ArtifactBucket, '/*']]
-             - !Join ['',['arn:aws:s3:::',!Ref ArtifactBucket]]
+              - Fn::Join:
+                - ''
+                - - 'arn:aws:s3:::'
+                  - Fn::ImportValue: !Sub "${BaseStack}:ArtifactBucket"
+              - Fn::Join:
+                - ''
+                - - 'arn:aws:s3:::'
+                  - Fn::ImportValue: !Sub "${BaseStack}:ArtifactBucket"
+                  - '/*'
           -
             Effect: Allow
             Action:
@@ -411,11 +334,13 @@ Resources:
       RoleArn: !GetAtt PipeLineRole.Arn
       Name: !Ref AWS::StackName
       ArtifactStore:
-        Location: !Ref ArtifactBucket
+        Location: 
+          Fn::ImportValue: !Sub "${BaseStack}:ArtifactBucket"
         Type: S3
         EncryptionKey: 
           Type: KMS
-          Id: !Ref CodePipelineKmsAlias
+          Id: 
+            Fn::ImportValue: !Sub "${BaseStack}:CodePipelineKmsAlias"
       Stages:
         - Name: Source
           Actions:
@@ -426,7 +351,8 @@ Resources:
                 Version: 1
                 Provider: S3
               Configuration: 
-                S3Bucket: !Ref ArtifactBucket 
+                S3Bucket: 
+                  Fn::ImportValue: !Sub "${BaseStack}:ArtifactBucket"
                 S3ObjectKey: core-pipeline.zip
               OutputArtifacts: 
                 - Name: SourceOutput 
@@ -484,26 +410,4 @@ Resources:
               InputArtifacts:
                 - Name: SourceOutput
               RunOrder: 1
-
-Outputs:
-  ArtifactBucket:
-    Description: The S3 Bucket for the artifacts
-    Value: !Ref ArtifactBucket
-    Export:
-      Name: !Sub "${AWS::StackName}:ArtifactBucket"
-  CodePipelineKmsKey:
-    Description: Pipeline KMS key 
-    Value: !Ref CodePipelineKmsKey
-    Export:
-      Name: !Sub "${AWS::StackName}:CodePipelineKmsKey"
-  CodePipelineKmsKeyArn:
-    Description: Pipeline KMS key Arn
-    Value: !GetAtt CodePipelineKmsKey.Arn
-    Export:
-      Name: !Sub "${AWS::StackName}:CodePipelineKmsKeyArn"
-  CodePipelineKmsAlias:
-    Description: Pipeline KMS key alias
-    Value: !Ref CodePipelineKmsAlias
-    Export:
-      Name: !Sub "${AWS::StackName}:CodePipelineKmsAlias"
       
