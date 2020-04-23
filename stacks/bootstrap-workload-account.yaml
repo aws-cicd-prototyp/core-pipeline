@@ -27,6 +27,7 @@ Resources:
             Principal:
               Service:
                 - codepipeline.amazonaws.com
+                - codebuild.amazonaws.com
               AWS:
                 - !Sub arn:aws:iam::${DevOpsAccount}:root
             Action:
@@ -53,8 +54,8 @@ Resources:
               - codebuild:BatchGetBuilds
               - codebuild:StartBuild
               - iam:PassRole
-              - s3:*
-              - cloudformation:*
+              - cloudformation:DescribeStacks
+              - cloudformation:UpdateStack
             Resource:
               - "*"
           -

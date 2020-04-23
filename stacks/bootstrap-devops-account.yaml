@@ -58,6 +58,13 @@ Resources:
                 - - 'arn:aws:s3:::'
                   - Fn::ImportValue: !Sub "${BaseStack}:ArtifactBucket"
                   - '/*'
+          -
+            Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Resource: 
+              - !Sub arn:aws:iam::${RemoteAccountTest}:role/CrossAccountRole
+            
       Roles:
         - !Ref CodeBuildServiceRole                
 
@@ -113,6 +120,20 @@ Resources:
                     "DevOpsAccount": "${DEV_OPS_ACCOUNT_ID}"
                   }
                   EOF
+                - CREDENTIALS=$(aws sts assume-role --role-arn arn:aws:iam::${REMOTE_ACCOUNT_ID}:role/CrossAccountRole --role-session-name 'TestAssumeRole')
+                - export AWS_ACCESS_KEY_ID=$(echo $CREDENTIALS | jq -r ".Credentials.AccessKeyId")
+                - export AWS_SECRET_ACCESS_KEY=$(echo $CREDENTIALS | jq -r ".Credentials.SecretAccessKey")
+                - export AWS_SESSION_TOKEN=$(echo $CREDENTIALS | jq -r ".Credentials.SessionToken")
+                - aws cloudformation update-stack --stack-name cross-account-roles-deployer 
+                  --template-body file://build/cross-account-roles.yaml 
+                  --parameters 
+                    ParameterKey=DevOpsAccount,ParameterValue=${DEV_OPS_ACCOUNT_ID} 
+                    ParameterKey=ArtifactBucket,ParameterValue=${ARTIFACT_BUCKET} 
+                    ParameterKey=PipelineKmsKeyArn,ParameterValue=${PIPELINE_KMS_KEY_ARN} 
+                    ParameterKey=Branch,ParameterValue=${BRANCH} 
+                    ParameterKey=Stage,ParameterValue=${STAGE} 
+                  --role-arn "arn:aws:iam::${REMOTE_ACCOUNT_ID}:role/CrossAccountCoreRole" 
+                  --capabilities CAPABILITY_NAMED_IAM
           artifacts:
             base-directory: ${REPOSITORY}
             files:
