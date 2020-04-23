@@ -55,7 +55,7 @@ Resources:
               - codebuild:StartBuild
               - iam:PassRole
               - cloudformation:DescribeStacks
-              - cloudformation:UpdateStack
+              - cloudformation:ListStacks
             Resource:
               - "*"
           -
@@ -100,6 +100,7 @@ Resources:
             Principal:
               Service:
                 - cloudformation.amazonaws.com
+                - codebuild.amazonaws.com
               AWS:
                 - !Sub arn:aws:iam::${DevOpsAccount}:root
                   # TODO refine with conditions

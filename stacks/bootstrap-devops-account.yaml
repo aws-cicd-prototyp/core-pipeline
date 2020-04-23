@@ -43,11 +43,25 @@ Resources:
               - logs:CreateLogGroup
               - logs:CreateLogStream
               - logs:PutLogEvents
-          - Effect: Allow
+          -
+            Effect: Allow
             Action:
-              - s3:GetObject
+              - kms:Decrypt
+              - kms:Encrypt
+              - kms:GenerateDataKey
+            Resource: 
+              Fn::ImportValue: !Sub "${BaseStack}:CodePipelineKmsKeyArn"
+          -
+            Effect: Allow
+            Action:
               - s3:PutObject
+              - s3:GetBucketPolicy
+              - s3:GetObject
+              - s3:ListBucket
               - s3:GetObjectVersion
+              - s3:GetBucketVersioning
+              - s3:ListBucketVersions
+              - s3:GetObjectVersionTagging
             Resource:
               - Fn::Join:
                 - ''
@@ -63,8 +77,33 @@ Resources:
             Action:
               - sts:AssumeRole
             Resource: 
-              - !Sub arn:aws:iam::${RemoteAccountTest}:role/CrossAccountRole
-            
+              - !Sub arn:aws:iam::${RemoteAccountTest}:role/CrossAccountCoreRole
+          -
+            Effect: Allow
+            Action:
+              - codepipeline:*
+              - iam:ListRoles
+              - codecommit:List*
+              - codecommit:Get*
+              - codecommit:GitPull
+              - codecommit:UploadArchive
+              - codecommit:CancelUploadArchive
+              - codebuild:BatchGetBuilds
+              - codebuild:StartBuild
+              - iam:PassRole
+              - s3:*
+              - cloudformation:*
+              - iam:* # TODO refine permissions 
+            Resource:
+              - "*"            
+          -
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+              - ssm:GetParameters
+            Resource:
+              # TODO necessary here?
+              - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/GitHubOauthToken"
       Roles:
         - !Ref CodeBuildServiceRole                
 
@@ -116,24 +155,12 @@ Resources:
                     "PipelineKmsKeyArn": "${PIPELINE_KMS_KEY_ARN}",
                     "Branch": "${BRANCH}",
                     "Stage": "${STAGE}",
+                    "Project": "${PROJECT}",
+                    "Repository": "${REPOSITORY}",
                     "RemoteAccount": "${REMOTE_ACCOUNT_ID}",
                     "DevOpsAccount": "${DEV_OPS_ACCOUNT_ID}"
                   }
                   EOF
-                - CREDENTIALS=$(aws sts assume-role --role-arn arn:aws:iam::${REMOTE_ACCOUNT_ID}:role/CrossAccountRole --role-session-name 'TestAssumeRole')
-                - export AWS_ACCESS_KEY_ID=$(echo $CREDENTIALS | jq -r ".Credentials.AccessKeyId")
-                - export AWS_SECRET_ACCESS_KEY=$(echo $CREDENTIALS | jq -r ".Credentials.SecretAccessKey")
-                - export AWS_SESSION_TOKEN=$(echo $CREDENTIALS | jq -r ".Credentials.SessionToken")
-                - aws cloudformation update-stack --stack-name cross-account-roles-deployer 
-                  --template-body file://build/cross-account-roles.yaml 
-                  --parameters 
-                    ParameterKey=DevOpsAccount,ParameterValue=${DEV_OPS_ACCOUNT_ID} 
-                    ParameterKey=ArtifactBucket,ParameterValue=${ARTIFACT_BUCKET} 
-                    ParameterKey=PipelineKmsKeyArn,ParameterValue=${PIPELINE_KMS_KEY_ARN} 
-                    ParameterKey=Branch,ParameterValue=${BRANCH} 
-                    ParameterKey=Stage,ParameterValue=${STAGE} 
-                  --role-arn "arn:aws:iam::${REMOTE_ACCOUNT_ID}:role/CrossAccountCoreRole" 
-                  --capabilities CAPABILITY_NAMED_IAM
           artifacts:
             base-directory: ${REPOSITORY}
             files:
@@ -279,6 +306,7 @@ Resources:
             Principal:
               Service:
                 - cloudformation.amazonaws.com
+                - codebuild.amazonaws.com
             Action:
               - sts:AssumeRole
       Path: /
@@ -346,6 +374,58 @@ Resources:
       Roles:
         - !Ref PipelineDeployRole
 
+  PipelineCloudWatchEventRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        -
+          PolicyName: cwe-core-pipeline-execution
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource: !Join [ '', [ 'arn:aws:codepipeline:', !Ref 'AWS::Region', ':', !Ref 'AWS::AccountId', ':', !Ref Pipeline ] ]
+
+  PipelineCloudWatchEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - 'AWS API Call via CloudTrail'
+        detail:
+          eventSource:
+            - s3.amazonaws.com
+          eventName:
+            - CopyObject
+            - PutObject
+            - CompleteMultipartUpload
+          requestParameters:
+            bucketName:
+              - Fn::ImportValue: !Sub "${BaseStack}:ArtifactBucket"
+            key:
+              - core-pipeline.zip
+      Targets:
+        -
+          Arn:
+            !Join [ '', [ 'arn:aws:codepipeline:', !Ref 'AWS::Region', ':', !Ref 'AWS::AccountId', ':', !Ref Pipeline ] ]
+          RoleArn: !GetAtt PipelineCloudWatchEventRole.Arn
+          Id: !Ref Pipeline
+
+  # https://docs.aws.amazon.com/codepipeline/latest/userguide/create-cloudtrail-S3-source-cfn.html
   Pipeline:
     Type: AWS::CodePipeline::Pipeline
     DependsOn:
@@ -354,6 +434,7 @@ Resources:
     Properties:
       RoleArn: !GetAtt PipeLineRole.Arn
       Name: !Ref AWS::StackName
+      RestartExecutionOnUpdate: false
       ArtifactStore:
         Location: 
           Fn::ImportValue: !Sub "${BaseStack}:ArtifactBucket"
@@ -375,6 +456,7 @@ Resources:
                 S3Bucket: 
                   Fn::ImportValue: !Sub "${BaseStack}:ArtifactBucket"
                 S3ObjectKey: core-pipeline.zip
+                PollForSourceChanges: false
               OutputArtifacts: 
                 - Name: SourceOutput 
               RunOrder: 1
@@ -382,53 +464,220 @@ Resources:
           Actions:
             - Name: CreateCrossAccountRoles
               ActionTypeId:
-                Category: Deploy
+                Category: Build
                 Owner: AWS
                 Version: 1
-                Provider: CloudFormation
+                Provider: CodeBuild
               Configuration:
-                ActionMode: CREATE_UPDATE # TODO replace failed
-                StackName: cross-account-roles-deployer
-                Capabilities: CAPABILITY_NAMED_IAM
-                TemplatePath: SourceOutput::build/cross-account-roles.yaml
-                TemplateConfiguration: SourceOutput::build/cross-account-roles.json
-                RoleArn: !Sub arn:aws:iam::${RemoteAccountTest}:role/CrossAccountCoreRole
-                ParameterOverrides: |
-                  {
-                    "ArtifactBucket" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "ArtifactBucket"]},
-                    "PipelineKmsKeyArn" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "PipelineKmsKeyArn"]},
-                    "Branch" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "Branch"]},
-                    "Stage" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "Stage"]},
-                    "DevOpsAccount": { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "DevOpsAccount"]}
-                  }
+                ProjectName: !Ref CreateUpdateCrossAccountRoles
               InputArtifacts:
                 - Name: SourceOutput
-              RunOrder: 1
-              RoleArn: !Sub arn:aws:iam::${RemoteAccountTest}:role/CrossAccountRole
-        - Name: DeployPipeline
+              RunOrder: 1 
+        - Name: CreateProjectPipeline
           Actions:
-            - Name: DeployPipeline
+            - Name: CreateProjectPipeline
               ActionTypeId:
-                Category: Deploy
+                Category: Build
                 Owner: AWS
                 Version: 1
-                Provider: CloudFormation
+                Provider: CodeBuild
               Configuration:
-                ActionMode: CREATE_UPDATE # TODO replace failed
-                StackName: pipeline-deployer
-                Capabilities: CAPABILITY_NAMED_IAM
-                TemplatePath: SourceOutput::build/pipeline.yaml
-                TemplateConfiguration: SourceOutput::build/pipeline.json
-                RoleArn: !GetAtt PipelineDeployRole.Arn
-                ParameterOverrides: |
-                  {
-                    "ArtifactBucket" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "ArtifactBucket"]},
-                    "PipelineKmsKeyArn" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "PipelineKmsKeyArn"]},
-                    "Branch" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "Branch"]},
-                    "Stage" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "Stage"]},
-                    "RemoteAccount" : { "Fn::GetParam" : ["SourceOutput", "pipeline_env.json", "RemoteAccount"]}
-                  }
+                ProjectName: !Ref CreateUpdateProjectPipelineBuild
               InputArtifacts:
                 - Name: SourceOutput
-              RunOrder: 1
-      
+              RunOrder: 1 
+
+
+  # TODO don't start on update  
+  CreateUpdateCrossAccountRoles:
+    Type: AWS::CodeBuild::Project
+    DependsOn:
+      - CodeBuildServiceRole
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        # TODO cleanup BRANCH name
+        BuildSpec: |
+          version: 0.2
+          env:
+            variables:
+              ARTIFACT_BUCKET: "Artifact Bucket"
+              PIPELINE_KMS_KEY_ARN: "Pipeline KMS key ARN"
+              DEV_OPS_ACCOUNT_ID: "DevOps account id"
+              REMOTE_ACCOUNT_ID: "Remote workload accout ID"
+          phases:
+            pre_build:
+              commands:
+                - cd $CODEBUILD_SRC_DIR
+                - export PROJECT=$(cat pipeline_env.json | jq -r ".Project")
+                - export REPOSITORY=$(cat pipeline_env.json | jq -r ".Repository")
+                - export BRANCH=$(cat pipeline_env.json | jq -r ".Branch")
+                - export BRANCH_NAME=$BRANCH
+                - export STAGE=$(cat pipeline_env.json | jq -r ".Stage")
+                - CREDENTIALS=$(aws sts assume-role --role-arn arn:aws:iam::${REMOTE_ACCOUNT_ID}:role/CrossAccountCoreRole --role-session-name "AssumeRole-${PROJECT}-${REPOSITORY}")
+                - export AWS_ACCESS_KEY_ID=$(echo $CREDENTIALS | jq -r ".Credentials.AccessKeyId")
+                - export AWS_SECRET_ACCESS_KEY=$(echo $CREDENTIALS | jq -r ".Credentials.SecretAccessKey")
+                - export AWS_SESSION_TOKEN=$(echo $CREDENTIALS | jq -r ".Credentials.SessionToken")
+                - STACKS=$(aws cloudformation list-stacks --stack-status-filter CREATE_COMPLETE ROLLBACK_COMPLETE UPDATE_COMPLETE UPDATE_ROLLBACK_COMPLETE IMPORT_COMPLETE IMPORT_ROLLBACK_COMPLETE)
+                - STACKS_COUNT=$(echo $STACKS | jq --arg stack "ca-roles-${PROJECT}-${REPOSITORY}-${STAGE}-${BRANCH_NAME}" '.StackSummaries[] | select(.StackName==$stack) | .StackId' | jq --slurp '. | length') 
+                - |
+                  if [ $STACKS_COUNT = "0" ]
+                  then
+                    aws cloudformation create-stack \
+                      --stack-name "ca-roles-${PROJECT}-${REPOSITORY}-${STAGE}-${BRANCH_NAME}" \
+                      --template-body file://build/cross-account-roles.yaml \
+                      --parameters \
+                        ParameterKey=DevOpsAccount,ParameterValue=${DEV_OPS_ACCOUNT_ID} \
+                        ParameterKey=ArtifactBucket,ParameterValue=${ARTIFACT_BUCKET} \
+                        ParameterKey=PipelineKmsKeyArn,ParameterValue=${PIPELINE_KMS_KEY_ARN} \
+                        ParameterKey=Branch,ParameterValue=${BRANCH} \
+                        ParameterKey=Stage,ParameterValue=${STAGE} \
+                      --capabilities CAPABILITY_NAMED_IAM
+                    aws cloudformation wait stack-create-complete --stack-name "ca-roles-${PROJECT}-${REPOSITORY}-${STAGE}-${BRANCH_NAME}"
+                  else
+                    aws cloudformation create-change-set \
+                      --stack-name "ca-roles-${PROJECT}-${REPOSITORY}-${STAGE}-${BRANCH_NAME}" \
+                      --template-body file://build/cross-account-roles.yaml \
+                      --parameters \
+                        ParameterKey=DevOpsAccount,ParameterValue=${DEV_OPS_ACCOUNT_ID} \
+                        ParameterKey=ArtifactBucket,ParameterValue=${ARTIFACT_BUCKET} \
+                        ParameterKey=PipelineKmsKeyArn,ParameterValue=${PIPELINE_KMS_KEY_ARN} \
+                        ParameterKey=Branch,ParameterValue=${BRANCH} \
+                        ParameterKey=Stage,ParameterValue=${STAGE} \
+                      --capabilities CAPABILITY_NAMED_IAM \
+                      --change-set-name "ca-roles-${CODEBUILD_START_TIME}" > change-set.json
+                    CHANGE_SET_ID=$(cat change-set.json | jq -r '.Id')
+                    CHANGE_SET=$(aws cloudformation describe-change-set --change-set-name $CHANGE_SET_ID)
+                    CHANGE_SET_STATUS=$(echo $CHANGE_SET | jq -r '.Status')
+                    if [ $CHANGE_SET_STATUS != "FAILED" ]
+                    then
+                      aws cloudformation wait change-set-create-complete --change-set-name $CHANGE_SET_ID 
+                    fi
+                    aws cloudformation describe-change-set --change-set-name $CHANGE_SET_ID > change-set-details.json 
+                    CHANGES_COUNT=$(cat change-set-details.json |  jq '.Changes | length')
+                    if [ $CHANGES_COUNT = "0" ]
+                    then
+                      aws cloudformation delete-change-set --change-set-name $CHANGE_SET_ID
+                    else
+                      aws cloudformation execute-change-set --change-set-name $CHANGE_SET_ID
+                      aws cloudformation wait stack-update-complete --stack-name "ca-roles-${PROJECT}-${REPOSITORY}-${STAGE}-${BRANCH_NAME}"
+                    fi
+                  fi
+          artifacts:
+            base-directory: ${CODEBUILD_SRC_DIR}
+            files:
+              - change-set-details.json
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:3.0
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: ARTIFACT_BUCKET
+            Value: 
+              Fn::ImportValue: !Sub "${BaseStack}:ArtifactBucket"
+          - Name: PIPELINE_KMS_KEY_ARN
+            Value: 
+              Fn::ImportValue: !Sub "${BaseStack}:CodePipelineKmsKeyArn"
+          - Name: DEV_OPS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: REMOTE_ACCOUNT_ID
+            Value: !Ref RemoteAccountTest
+      Name: CreateUpdateCrossAccountRoles
+      ServiceRole: !Ref CodeBuildServiceRole
+
+  # TODO Finalize roles and policies
+  CreateUpdateProjectPipelineBuild:
+    Type: AWS::CodeBuild::Project
+    DependsOn:
+      - CodeBuildServiceRole
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        # TODO cleanup BRANCH name
+        BuildSpec: |
+          version: 0.2
+          env:
+            variables:
+              ARTIFACT_BUCKET: "Artifact Bucket"
+              PIPELINE_KMS_KEY_ARN: "Pipeline KMS key ARN"
+              DEV_OPS_ACCOUNT_ID: "DevOps account id"
+              REMOTE_ACCOUNT_ID: "Remote workload accout ID"
+          phases:
+            pre_build:
+              commands:
+                - cd $CODEBUILD_SRC_DIR
+                - export PROJECT=$(cat pipeline_env.json | jq -r ".Project")
+                - export REPOSITORY=$(cat pipeline_env.json | jq -r ".Repository")
+                - export BRANCH=$(cat pipeline_env.json | jq -r ".Branch")
+                - export BRANCH_NAME=$BRANCH
+                - export STAGE=$(cat pipeline_env.json | jq -r ".Stage")
+                - STACKS=$(aws cloudformation list-stacks --stack-status-filter CREATE_COMPLETE ROLLBACK_COMPLETE UPDATE_COMPLETE UPDATE_ROLLBACK_COMPLETE IMPORT_COMPLETE IMPORT_ROLLBACK_COMPLETE)
+                - STACKS_COUNT=$(echo $STACKS | jq --arg stack "pipeline-${PROJECT}-${REPOSITORY}-${STAGE}-${BRANCH_NAME}" '.StackSummaries[] | select(.StackName==$stack) | .StackId' | jq --slurp '. | length') 
+                - |
+                  if [ $STACKS_COUNT = "0" ]
+                  then
+                    aws cloudformation create-stack \
+                      --stack-name "pipeline-${PROJECT}-${REPOSITORY}-${STAGE}-${BRANCH_NAME}" \
+                      --template-body file://build/pipeline.yaml \
+                      --parameters \
+                        ParameterKey=RemoteAccount,ParameterValue=${REMOTE_ACCOUNT_ID} \
+                        ParameterKey=ArtifactBucket,ParameterValue=${ARTIFACT_BUCKET} \
+                        ParameterKey=PipelineKmsKeyArn,ParameterValue=${PIPELINE_KMS_KEY_ARN} \
+                        ParameterKey=Branch,ParameterValue=${BRANCH} \
+                        ParameterKey=Stage,ParameterValue=${STAGE} \
+                      --capabilities CAPABILITY_NAMED_IAM
+                    aws cloudformation wait stack-create-complete --stack-name "pipeline-${PROJECT}-${REPOSITORY}-${STAGE}-${BRANCH_NAME}"
+                  else
+                    aws cloudformation create-change-set \
+                      --stack-name "pipeline-${PROJECT}-${REPOSITORY}-${STAGE}-${BRANCH_NAME}" \
+                      --template-body file://build/pipeline.yaml \
+                      --parameters \
+                        ParameterKey=RemoteAccount,ParameterValue=${REMOTE_ACCOUNT_ID} \
+                        ParameterKey=ArtifactBucket,ParameterValue=${ARTIFACT_BUCKET} \
+                        ParameterKey=PipelineKmsKeyArn,ParameterValue=${PIPELINE_KMS_KEY_ARN} \
+                        ParameterKey=Branch,ParameterValue=${BRANCH} \
+                        ParameterKey=Stage,ParameterValue=${STAGE} \
+                      --capabilities CAPABILITY_NAMED_IAM \
+                      --change-set-name "pipeline-${CODEBUILD_START_TIME}" > change-set.json
+                    CHANGE_SET_ID=$(cat change-set.json | jq -r '.Id')
+                    CHANGE_SET=$(aws cloudformation describe-change-set --change-set-name $CHANGE_SET_ID)
+                    CHANGE_SET_STATUS=$(echo $CHANGE_SET | jq -r '.Status')
+                    if [ $CHANGE_SET_STATUS != "FAILED" ]
+                    then
+                      aws cloudformation wait change-set-create-complete --change-set-name $CHANGE_SET_ID 
+                    fi
+                    aws cloudformation describe-change-set --change-set-name $CHANGE_SET_ID > change-set-details.json 
+                    CHANGES_COUNT=$(cat change-set-details.json |  jq '.Changes | length')
+                    if [ $CHANGES_COUNT = "0" ]
+                    then
+                      aws cloudformation delete-change-set --change-set-name $CHANGE_SET_ID
+                    else
+                      aws cloudformation execute-change-set --change-set-name $CHANGE_SET_ID
+                      aws cloudformation wait stack-update-complete --stack-name "pipeline-${PROJECT}-${REPOSITORY}-${STAGE}-${BRANCH_NAME}"
+                    fi
+                  fi
+          artifacts:
+            base-directory: ${CODEBUILD_SRC_DIR}
+            files:
+              - change-set-details.json
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:3.0
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: ARTIFACT_BUCKET
+            Value: 
+              Fn::ImportValue: !Sub "${BaseStack}:ArtifactBucket"
+          - Name: PIPELINE_KMS_KEY_ARN
+            Value: 
+              Fn::ImportValue: !Sub "${BaseStack}:CodePipelineKmsKeyArn"
+          - Name: DEV_OPS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: REMOTE_ACCOUNT_ID
+            Value: !Ref RemoteAccountTest
+      Name: CreateUpdateProjectPipelineBuild
+      ServiceRole: !Ref CodeBuildServiceRole
