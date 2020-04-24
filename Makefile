@@ -1,15 +1,25 @@
 SHELL = /bin/bash
 
-AWS_DEVOPS_PROFILE=default
-AWS_PROD_PROFILE=michi.prod
+AWS_DEVOPS_PROFILE=
+AWS_PROD_PROFILE=
 AWS_REGION ?= eu-central-1
 
-DEVOPS_ACCOUNT_ID=147376585776
-WORKLOAD_ACCOUNT_ID=496106771575
+DEVOPS_ACCOUNT_ID=
+WORKLOAD_ACCOUNT_ID=
+
+help:
+	@echo "Usage: "
+	@echo -e "\nTo deploy all CorePipeline-Stacks:"
+	@echo "   'make deploy'"
+	@echo -e "\nTo destroy all CorePipeline-Stacks:"
+	@echo "   'make destroy'"
 
 deploy: _deployBaseBootstrap _deployCrossAccountRole _deployCorePipeline
+destroy: _destroyCorePipeline _destroyCrossAccountRole _destroyBaseBootstrap
 
-
+# ---------------------------------------------
+# Deploy CorePipeline-Stacks:
+# ---------------------------------------------
 _deployBaseBootstrap:
 	@echo "Creating the baseBootstrap Stack..."
 	@aws cloudformation create-stack \
@@ -66,6 +76,30 @@ _deployCorePipeline:
 		--profile ${AWS_DEVOPS_PROFILE} \
 		--region ${AWS_REGION}
 	@echo "successful created!"
+
+# ---------------------------------------------
+# Destroy CorePipeline-Stacks:
+# ---------------------------------------------
+_destroyCorePipeline:
+	@echo -e "\n Start deletion of bootstrapCorePipeline Stack"
+	@aws cloudformation delete-stack --stack-name bootstrapCorePipeline --region ${AWS_REGION} --profile ${AWS_DEVOPS_PROFILE}
+	@echo "   wait for deletion..."
+	@aws cloudformation wait stack-delete-complete --stack-name bootstrapCorePipeline --region ${AWS_REGION} --profile ${AWS_DEVOPS_PROFILE}
+	@echo "   Deletion successful finished!"
+
+_destroyCrossAccountRole:
+	@echo -e "\n Start deletion of bootstrapCorePipelineCrossAccount Stack"
+	@aws cloudformation delete-stack --stack-name bootstrapCorePipelineCrossAccount --region ${AWS_REGION} --profile ${AWS_PROD_PROFILE}
+	@echo "   wait for deletion..."
+	@aws cloudformation wait stack-delete-complete --stack-name bootstrapCorePipelineCrossAccount --region ${AWS_REGION} --profile ${AWS_PROD_PROFILE}
+	@echo "   Deletion successful finished!"
+
+_destroyBaseBootstrap:
+	@echo -e "\n Start deletion of bootstrapBase Stack"
+	@aws cloudformation delete-stack --stack-name bootstrapBase --region ${AWS_REGION} --profile ${AWS_DEVOPS_PROFILE}
+	@echo "   wait for deletion..."
+	@aws cloudformation wait stack-delete-complete --stack-name bootstrapBase --region ${AWS_REGION} --profile ${AWS_DEVOPS_PROFILE}
+	@echo "   Deletion successful finished!"
 
 define getOutputValueOfStack
 	aws cloudformation describe-stacks --stack-name ${1} --profile ${2} --region ${AWS_REGION} | jq '.Stacks[] | .Outputs[] | select(.OutputValue | contains("${3}")) | .OutputValue'
