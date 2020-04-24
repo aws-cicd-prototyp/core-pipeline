@@ -1,11 +1,11 @@
 SHELL = /bin/bash
 
-AWS_DEVOPS_PROFILE=
-AWS_PROD_PROFILE=
+AWS_DEVOPS_PROFILE=default
+AWS_PROD_PROFILE=michi.prod
 AWS_REGION ?= eu-central-1
 
-DEVOPS_ACCOUNT_ID=
-WORKLOAD_ACCOUNT_ID=
+DEVOPS_ACCOUNT_ID=147376585776
+WORKLOAD_ACCOUNT_ID=496106771575
 
 help:
 	@echo "Usage: "
@@ -15,7 +15,7 @@ help:
 	@echo "   'make destroy'"
 
 deploy: _deployBaseBootstrap _deployCrossAccountRole _deployCorePipeline
-destroy: _destroyCorePipeline _destroyCrossAccountRole _destroyBaseBootstrap
+destroy: _destroyCorePipeline _destroyCrossAccountRole _destroyBootstrapBase
 
 # ---------------------------------------------
 # Deploy CorePipeline-Stacks:
@@ -45,8 +45,8 @@ _deployCrossAccountRole:
 		--template-body file://stacks/bootstrap-workload-account.yaml \
 		--parameters \
         			ParameterKey="DevOpsAccount",ParameterValue=${WORKLOAD_ACCOUNT_ID} \
-        		  	ParameterKey="CodePipelineKmsKeyArn",ParameterValue=$(shell $(call getOutputValueOfStack,baseBootstrap,${AWS_DEVOPS_PROFILE},arn:aws:kms)) \
-        		  	ParameterKey="ArtifactBucket",ParameterValue=$(shell $(call getOutputValueOfStack,baseBootstrap,${AWS_DEVOPS_PROFILE},codepipeline-artifacts-test)) \
+        		  	ParameterKey="CodePipelineKmsKeyArn",ParameterValue=$(shell $(call getOutputValueOfStack,bootstrapBase,${AWS_DEVOPS_PROFILE},arn:aws:kms)) \
+        		  	ParameterKey="ArtifactBucket",ParameterValue=$(shell $(call getOutputValueOfStack,bootstrapBase,${AWS_DEVOPS_PROFILE},codepipeline-artifacts-test)) \
 		--profile ${AWS_PROD_PROFILE} \
 		--capabilities CAPABILITY_NAMED_IAM \
 		--region ${AWS_REGION}
@@ -94,7 +94,7 @@ _destroyCrossAccountRole:
 	@aws cloudformation wait stack-delete-complete --stack-name bootstrapCorePipelineCrossAccount --region ${AWS_REGION} --profile ${AWS_PROD_PROFILE}
 	@echo "   Deletion successful finished!"
 
-_destroyBaseBootstrap:
+_destroyBootstrapBase:
 	@echo -e "\n Start deletion of bootstrapBase Stack"
 	@aws cloudformation delete-stack --stack-name bootstrapBase --region ${AWS_REGION} --profile ${AWS_DEVOPS_PROFILE}
 	@echo "   wait for deletion..."

@@ -511,6 +511,7 @@ Resources:
             pre_build:
               commands:
                 - cd $CODEBUILD_SRC_DIR
+                - ls -lah
                 - export PROJECT=$(cat pipeline_env.json | jq -r ".Project")
                 - export REPOSITORY=$(cat pipeline_env.json | jq -r ".Repository")
                 - export BRANCH=$(cat pipeline_env.json | jq -r ".Branch")
@@ -610,6 +611,7 @@ Resources:
             pre_build:
               commands:
                 - cd $CODEBUILD_SRC_DIR
+                - ls -lah
                 - export PROJECT=$(cat pipeline_env.json | jq -r ".Project")
                 - export REPOSITORY=$(cat pipeline_env.json | jq -r ".Repository")
                 - export BRANCH=$(cat pipeline_env.json | jq -r ".Branch")
