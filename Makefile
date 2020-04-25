@@ -44,7 +44,7 @@ _deployCrossAccountRole:
 		--stack-name bootstrapCorePipelineCrossAccount \
 		--template-body file://stacks/bootstrap-workload-account.yaml \
 		--parameters \
-        			ParameterKey="DevOpsAccount",ParameterValue=${WORKLOAD_ACCOUNT_ID} \
+        			ParameterKey="DevOpsAccount",ParameterValue=${DEVOPS_ACCOUNT_ID} \
         		  	ParameterKey="CodePipelineKmsKeyArn",ParameterValue=$(shell $(call getOutputValueOfStack,bootstrapBase,${AWS_DEVOPS_PROFILE},arn:aws:kms)) \
         		  	ParameterKey="ArtifactBucket",ParameterValue=$(shell $(call getOutputValueOfStack,bootstrapBase,${AWS_DEVOPS_PROFILE},codepipeline-artifacts-test)) \
 		--profile ${AWS_PROD_PROFILE} \
