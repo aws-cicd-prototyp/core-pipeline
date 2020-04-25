@@ -631,6 +631,8 @@ Resources:
                         ParameterKey=PipelineKmsKeyArn,ParameterValue=${PIPELINE_KMS_KEY_ARN} \
                         ParameterKey=Branch,ParameterValue=${BRANCH} \
                         ParameterKey=Stage,ParameterValue=${STAGE} \
+                        ParameterKey=Project,ParameterValue=${PROJECT} \
+                        ParameterKey=Repository,ParameterValue=${REPOSITORY} \
                       --capabilities CAPABILITY_NAMED_IAM
                     aws cloudformation wait stack-create-complete --stack-name "pipeline-${PROJECT}-${REPOSITORY}-${STAGE}-${BRANCH_NAME}"
                   else
@@ -643,6 +645,8 @@ Resources:
                         ParameterKey=PipelineKmsKeyArn,ParameterValue=${PIPELINE_KMS_KEY_ARN} \
                         ParameterKey=Branch,ParameterValue=${BRANCH} \
                         ParameterKey=Stage,ParameterValue=${STAGE} \
+                        ParameterKey=Project,ParameterValue=${PROJECT} \
+                        ParameterKey=Repository,ParameterValue=${REPOSITORY} \
                       --capabilities CAPABILITY_NAMED_IAM \
                       --change-set-name "pipeline-${CODEBUILD_START_TIME}" > change-set.json
                     CHANGE_SET_ID=$(cat change-set.json | jq -r '.Id')
